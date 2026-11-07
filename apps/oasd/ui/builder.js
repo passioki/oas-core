@@ -1101,6 +1101,167 @@
     return obj && Array.isArray(obj[last]) ? obj[last] : null;
   }
 
+  // --- seq136（#10）：同层拖动排序（纯函数）+ step id 跟随 ----------------------
+  let nextStepUiId = 1;
+
+  // 非枚举 __ui_id：不写进 flow.json（JSON.stringify 忽略），但拖动/重排后可按 id
+  // 重算选中 path（移动后 path 失效，id 不变）。
+  function stepUiId(step) {
+    if (!step || typeof step !== 'object') return '';
+    if (!step.__ui_id) {
+      const id = 's' + (nextStepUiId++);
+      try {
+        Object.defineProperty(step, '__ui_id', {
+          value: id, enumerable: false, writable: true, configurable: true,
+        });
+      } catch (e) {
+        step.__ui_id = id;
+      }
+    }
+    return step.__ui_id;
+  }
+
+  function stepPathById(steps, id, prefix) {
+    const list = Array.isArray(steps) ? steps : [];
+    const pre = Array.isArray(prefix) ? prefix : [];
+    for (let i = 0; i < list.length; i += 1) {
+      const step = list[i];
+      if (!step || typeof step !== 'object') continue;
+      const path = pre.concat([i]);
+      if (stepUiId(step) === id) return path;
+      for (const key of ['then', 'else', 'body']) {
+        const found = stepPathById(step[key], id, path.concat([key]));
+        if (found) return found;
+      }
+    }
+    return null;
+  }
+
+  // 同父级内移动：fromPath 指向的 step 插到 insertIndex（插入前的下标，0..len）。
+  // 跨容器/根级以外的操作返回 ok:false，由调用方保留箭头移动。
+  function moveStepWithinParent(rootSteps, fromPath, insertIndex) {
+    const roots = Array.isArray(rootSteps) ? rootSteps : [];
+    if (!Array.isArray(fromPath) || !fromPath.length) return { ok: false, error: '根容器不可拖动' };
+    const parentPath = fromPath.slice(0, -1);
+    let list = roots;
+    for (let i = 0; i < parentPath.length; i += 1) {
+      const seg = parentPath[i];
+      if (typeof seg === 'number') list = list && list[seg];
+      else list = list && list[seg];
+    }
+    if (!Array.isArray(list)) return { ok: false, error: '找不到拖动父容器' };
+    const from = fromPath[fromPath.length - 1];
+    if (!Number.isInteger(from) || from < 0 || from >= list.length) {
+      return { ok: false, error: '拖动源下标无效' };
+    }
+    const step = list[from];
+    const id = stepUiId(step);
+    let to = Number(insertIndex);
+    if (!Number.isFinite(to)) return { ok: false, error: '插入下标无效' };
+    to = Math.max(0, Math.min(list.length, Math.round(to)));
+    list.splice(from, 1);
+    if (to > from) to -= 1;
+    list.splice(to, 0, step);
+    return {
+      ok: true,
+      id: id,
+      moved: to !== from,
+      path: parentPath.concat([to]),
+    };
+  }
+
+  // 拖动指针 → 同层插入下标（上/中/下：越过节点中线即插到其后）。
+  function dragInsertionIndex(siblingNodes, pointerY) {
+    const nodes = Array.isArray(siblingNodes) ? siblingNodes : [];
+    const y = Number(pointerY);
+    if (!Number.isFinite(y) || !nodes.length) return 0;
+    for (let i = 0; i < nodes.length; i += 1) {
+      const n = nodes[i];
+      const top = Number(n.y) || 0;
+      const h = Math.max(1, Number(n.h) || 1);
+      if (y < top + h / 2) return i;
+    }
+    return nodes.length;
+  }
+
+  // 同层节点按父 path 过滤（拖动只允许同容器内重排）。
+  function sameParentGraphNodes(nodes, parentPath) {
+    const key = JSON.stringify(Array.isArray(parentPath) ? parentPath : []);
+    return (Array.isArray(nodes) ? nodes : [])
+      .filter((n) => n && Array.isArray(n.path) && JSON.stringify(n.path.slice(0, -1)) === key)
+      .sort((a, b) => a.y - b.y);
+  }
+
+  // 指示线几何：插到 idx 前 = 该节点上方；idx===len = 最后节点下方。
+  function flowDropIndicatorGeometry(nodes, idx) {
+    const list = Array.isArray(nodes) ? nodes : [];
+    if (!list.length) return null;
+    const i = Math.max(0, Math.min(list.length, Number(idx) || 0));
+    const x1 = Math.min.apply(null, list.map((n) => n.cx - n.w / 2));
+    const x2 = Math.max.apply(null, list.map((n) => n.cx + n.w / 2));
+    if (i <= 0) return { x1: x1, x2: x2, y: list[0].y - 6 };
+    if (i >= list.length) {
+      const last = list[list.length - 1];
+      return { x1: x1, x2: x2, y: last.y + last.h + 6 };
+    }
+    return { x1: x1, x2: x2, y: list[i].y - 6 };
+  }
+
+  // client 坐标 → SVG viewBox 坐标（自适应缩放后仍能命中正确节点）。
+  function svgPointInViewBox(clientX, clientY, rect, viewBox) {
+    const r = rect && typeof rect === 'object' ? rect : {};
+    const w = Number(r.width) || 1;
+    const h = Number(r.height) || 1;
+    const vb = viewBox && typeof viewBox === 'object'
+      ? viewBox
+      : { x: 0, y: 0, width: w, height: h };
+    return {
+      x: vb.x + ((Number(clientX) - (Number(r.left) || 0)) / w) * vb.width,
+      y: vb.y + ((Number(clientY) - (Number(r.top) || 0)) / h) * vb.height,
+    };
+  }
+
+  const flowDragState = { sourcePath: null, parentPath: null };
+  let flowDropIndicator = null;
+
+  function clearFlowDropIndicator() {
+    if (flowDropIndicator && flowDropIndicator.parentNode) flowDropIndicator.parentNode.removeChild(flowDropIndicator);
+    flowDropIndicator = null;
+  }
+
+  function scrollSelectedStepIntoView() {
+    const nodes = document.querySelectorAll('.builder-step.selected, .flow-svg-node.selected');
+    for (const node of nodes) {
+      if (node && typeof node.scrollIntoView === 'function') {
+        try { node.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch (e) { /* older DOM */ }
+        return;
+      }
+    }
+  }
+
+  // 执行同层拖动落点：记录选中/被拖动 step 的 id，重排后按 id 重算 B.selected 并滚动跟随。
+  function applyStepDragDrop(rootSteps, sourcePath, siblingNodes, pointerY) {
+    const source = getStep(sourcePath);
+    if (!source) return false;
+    const draggedId = stepUiId(source);
+    const selectedBefore = getStep(B.selected);
+    const selectedId = selectedBefore ? stepUiId(selectedBefore) : '';
+    const idx = dragInsertionIndex(siblingNodes, pointerY);
+    const result = moveStepWithinParent(rootSteps, sourcePath, idx);
+    if (!result.ok) return false;
+    // 选中项优先跟随原选中 step 的 id（拖动的是它则自然跟到新位置）；无选中时跟随拖动项。
+    if (selectedId) B.selected = stepPathById(rootSteps, selectedId) || B.selected;
+    else B.selected = stepPathById(rootSteps, draggedId) || B.selected;
+    renderAll();
+    scheduleAutoSave();
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(scrollSelectedStepIntoView);
+    } else {
+      setTimeout(scrollSelectedStepIntoView, 0);
+    }
+    return true;
+  }
+
   function childArrays(step) {
     const out = [];
     if (!step) return out;
@@ -1648,12 +1809,33 @@
       up.type = 'button';
       up.textContent = '↑';
       up.title = '上移';
-      up.addEventListener('click', (e) => { e.stopPropagation(); if (idx > 0) { [steps[idx - 1], steps[idx]] = [steps[idx], steps[idx - 1]]; B.selected = path; renderAll(); } });
+      up.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (idx > 0) {
+        const moved = steps[idx];
+        const movedId = stepUiId(moved);
+        [steps[idx - 1], steps[idx]] = [steps[idx], steps[idx - 1]];
+        // seq136（#10）：箭头移动后同样按 step id 重算选中（不再用已失效的 path）。
+        B.selected = stepPathById(getRoot(), movedId) || path;
+        renderAll();
+        scheduleAutoSave();
+      }
+    });
       const down = document.createElement('button');
       down.type = 'button';
       down.textContent = '↓';
       down.title = '下移';
-      down.addEventListener('click', (e) => { e.stopPropagation(); if (idx < steps.length - 1) { [steps[idx + 1], steps[idx]] = [steps[idx], steps[idx + 1]]; B.selected = path; renderAll(); } });
+      down.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (idx < steps.length - 1) {
+        const moved = steps[idx];
+        const movedId = stepUiId(moved);
+        [steps[idx + 1], steps[idx]] = [steps[idx], steps[idx + 1]];
+        B.selected = stepPathById(getRoot(), movedId) || path;
+        renderAll();
+        scheduleAutoSave();
+      }
+    });
       const del = document.createElement('button');
       del.type = 'button';
       del.textContent = '删';
@@ -1959,8 +2141,81 @@
         B.selected = node.path;
         renderAll();
       });
+      // seq136（#10）：同层拖动排序（根级 / if-loop 子级共用；跨父级由 wrap 过滤）。
+      g.setAttribute('draggable', 'true');
+      g.style.cursor = 'grab';
+      g.addEventListener('dragstart', (ev) => {
+        const parentPath = node.path.slice(0, -1);
+        flowDragState.sourcePath = node.path.slice();
+        flowDragState.parentPath = parentPath;
+        g.classList.add('dragging');
+        if (ev.dataTransfer) {
+          ev.dataTransfer.effectAllowed = 'move';
+          ev.dataTransfer.setData('text/plain', String(stepUiId(getStep(node.path))));
+        }
+      });
+      g.addEventListener('dragend', () => {
+        flowDragState.sourcePath = null;
+        flowDragState.parentPath = null;
+        g.classList.remove('dragging');
+        clearFlowDropIndicator();
+      });
     }
     svg.appendChild(g);
+  }
+
+  // seq136（#9）：流程图容器自适应（SVG 天然矢量，无 canvas DPR 重置问题；保留
+  // viewBox 节点坐标不变，按容器可用区域 fit → 居中）。纯函数便于测试。
+  function fitFlowGraphSize(naturalW, naturalH, containerW, containerH, opts) {
+    const nw = Math.max(1, Number(naturalW) || 1);
+    const nh = Math.max(1, Number(naturalH) || 1);
+    const cw = Math.max(1, Number(containerW) || 0);
+    const ch = Math.max(1, Number(containerH) || 0);
+    const maxScale = opts && Number(opts.maxScale) > 0 ? Number(opts.maxScale) : 1.6;
+    const minScale = opts && Number(opts.minScale) > 0 ? Number(opts.minScale) : 0.1;
+    const scale = Math.max(minScale, Math.min(maxScale, Math.min(cw / nw, ch / nh)));
+    return {
+      scale: scale,
+      width: cw,
+      height: ch,
+      offsetX: Math.round((cw - nw * scale) / 2),
+      offsetY: Math.round((ch - nh * scale) / 2),
+    };
+  }
+
+  const flowGraphState = { width: 0, height: 0, fitTimer: 0 };
+
+  function fitFlowGraph() {
+    const root = $('builder-graph');
+    const svg = root && root.querySelector ? root.querySelector('svg.flow-svg') : null;
+    if (!root || !svg) return null;
+    const rect = typeof root.getBoundingClientRect === 'function'
+      ? root.getBoundingClientRect()
+      : { width: 0, height: 0 };
+    const availW = Math.max(0, Math.round(rect.width || 0));
+    const availH = Math.max(0, Math.round(rect.height || 0)) ||
+      Math.max(240, Math.round((window.innerHeight || 720) * 0.4));
+    if (!availW) {
+      // 容器尚未布局（隐藏页/首帧）：保留自然尺寸属性，等待 ResizeObserver。
+      return null;
+    }
+    const fit = fitFlowGraphSize(flowGraphState.width, flowGraphState.height, availW, availH);
+    svg.setAttribute('width', String(fit.width));
+    svg.setAttribute('height', String(fit.height));
+    svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+    svg.style.width = '100%';
+    svg.style.height = '100%';
+    return fit;
+  }
+
+  function scheduleFlowGraphFit() {
+    if (flowGraphState.fitTimer) return;
+    const run = function () {
+      flowGraphState.fitTimer = 0;
+      fitFlowGraph();
+    };
+    flowGraphState.fitTimer = (typeof requestAnimationFrame === 'function')
+      ? requestAnimationFrame(run) : setTimeout(run, 0);
   }
 
   function renderGraph() {
@@ -1996,11 +2251,12 @@
       end.y + end.h + G.pad,
       graph.maxBottom + G.pad + 24 + backExtra * 10
     );
+    flowGraphState.width = width;
+    flowGraphState.height = height;
     const svg = sEl('svg', {
       class: 'flow-svg',
-      width,
-      height,
       viewBox: `0 0 ${width} ${height}`,
+      preserveAspectRatio: 'xMidYMid meet',
       role: 'img',
       'aria-label': '控制流图',
     });
@@ -2042,6 +2298,55 @@
     }
     for (const n of graph.nodes) renderSvgNode(svg, graph, n);
     root.appendChild(svg);
+    // seq136（#10）：同层拖动插入（上下指示线；首尾由 idx 0/len 覆盖）。
+    flowGraphState.nodes = graph.nodes.filter((n) => n && Array.isArray(n.path));
+    svg.addEventListener('dragover', (ev) => {
+      if (!flowDragState.sourcePath) return;
+      const sameParent = sameParentGraphNodes(flowGraphState.nodes, flowDragState.parentPath);
+      if (!sameParent.length) return;
+      ev.preventDefault();
+      if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'move';
+      const rect = svg.getBoundingClientRect();
+      const vb = svg.viewBox && svg.viewBox.baseVal
+        ? { x: svg.viewBox.baseVal.x, y: svg.viewBox.baseVal.y, width: svg.viewBox.baseVal.width, height: svg.viewBox.baseVal.height }
+        : { x: 0, y: 0, width: flowGraphState.width, height: flowGraphState.height };
+      const pt = svgPointInViewBox(ev.clientX, ev.clientY, rect, vb);
+      const idx = dragInsertionIndex(sameParent, pt.y);
+      const geo = flowDropIndicatorGeometry(sameParent, idx);
+      if (geo) {
+        if (!flowDropIndicator) {
+          flowDropIndicator = sEl('line');
+          flowDropIndicator.setAttribute('class', 'flow-drop-indicator');
+          svg.appendChild(flowDropIndicator);
+        }
+        flowDropIndicator.setAttribute('x1', geo.x1);
+        flowDropIndicator.setAttribute('x2', geo.x2);
+        flowDropIndicator.setAttribute('y1', geo.y);
+        flowDropIndicator.setAttribute('y2', geo.y);
+      }
+    });
+    svg.addEventListener('dragleave', (ev) => {
+      if (!ev.relatedTarget || ev.relatedTarget === svg) clearFlowDropIndicator();
+    });
+    svg.addEventListener('drop', (ev) => {
+      if (!flowDragState.sourcePath) return;
+      ev.preventDefault();
+      const sourcePath = flowDragState.sourcePath.slice();
+      const parentPath = flowDragState.parentPath;
+      flowDragState.sourcePath = null;
+      flowDragState.parentPath = null;
+      clearFlowDropIndicator();
+      const sameParent = sameParentGraphNodes(flowGraphState.nodes, parentPath);
+      if (!sameParent.length) return;
+      const rect = svg.getBoundingClientRect();
+      const vb = svg.viewBox && svg.viewBox.baseVal
+        ? { x: svg.viewBox.baseVal.x, y: svg.viewBox.baseVal.y, width: svg.viewBox.baseVal.width, height: svg.viewBox.baseVal.height }
+        : { x: 0, y: 0, width: flowGraphState.width, height: flowGraphState.height };
+      const pt = svgPointInViewBox(ev.clientX, ev.clientY, rect, vb);
+      applyStepDragDrop(getRoot(), sourcePath, sameParent, pt.y);
+    });
+    // seq136（#9）：按容器可用区域 fit/居中（ResizeObserver/window.resize 再算）。
+    fitFlowGraph();
   }
 
   function assetSearch(current, kinds) {
@@ -3627,13 +3932,8 @@
     kindLab.appendChild(kind);
     box.appendChild(kindLab);
 
-    const assetLab = document.createElement('label');
-    assetLab.textContent = '素材/操作区域';
-    const assetSearchWrap2 = assetSearch(loc.sel || '');
-    const asset = assetSearchWrap2.input;
-    assetLab.appendChild(assetSearchWrap2);
-    box.appendChild(assetLab);
-
+    // seq136（#3）：动作目标 picker 是唯一素材字段（旧 flow 的冗余 sel/素材字段由
+    // normalizeLegacyActionTargets 自动推导/忽略）；定位方式/文字来源只读兼容旧 flow。
     let textSource = null;
     let regionEditor = null;
     if (kind.value === 'ocr_text') {
@@ -3660,12 +3960,12 @@
     }
 
     function sync() {
+      // seq136（#3）：素材/操作区域由目标素材（actionTargetEditor）自动推导并保存在
+      // base 里；这里只同步定位方式/文字来源/旧 region，不再维护第二个素材字段。
       const next = Object.assign({}, base, { kind: kind.value });
-      if (asset.value) next.sel = asset.value;
-      else delete next.sel;
       let written = next;
       if (kind.value === 'ocr_text') {
-        const text = textSource ? textSource.read() : { mode: 'text', value: '' };
+        const text = textSource ? textSource.read() : { mode: 'keep', value: '' };
         written = text.mode === 'keep' ? next : paramSourceApply(next, text.mode, text.value);
         if (regionEditor) {
           const region = regionEditor.read();
@@ -3681,7 +3981,6 @@
       renderAll();
     }
     kind.addEventListener('change', sync);
-    asset.addEventListener('change', sync);
     root.appendChild(box);
   }
 
@@ -4115,9 +4414,31 @@
     root.appendChild(box);
   }
 
+  // seq136（#3）：定位类动作（click_target/long_press）旧 flow 的冗余「素材」字段
+  // 兼容：旧通用 picker 可能留下 args.sel；若 find[0] 缺 sel 则按其推导 template
+  // locator，然后删除冗余 sel（不阻塞保存/加载）。
+  function normalizeLegacyActionTargetArgs(args) {
+    const a = args && typeof args === 'object' && !Array.isArray(args) ? args : {};
+    if (!Object.prototype.hasOwnProperty.call(a, 'sel')) return a;
+    const id = String(a.sel === undefined || a.sel === null ? '' : a.sel).trim();
+    const find = Array.isArray(a.find) ? a.find : [];
+    const first = find[0];
+    const hasLocatorSel = !!(first && typeof first === 'object' && !Array.isArray(first) &&
+      first.sel !== undefined && first.sel !== null && String(first.sel).trim());
+    if (id && !hasLocatorSel) {
+      a.find = [{ kind: 'template', sel: id }].concat(find);
+    }
+    delete a.sel;
+    return a;
+  }
+
   function normalizeStepArgs(step) {
     if (!step || typeof step !== 'object') return;
     step.args = step.args || {};
+    if (step.op === 'click_target' || step.op === 'long_press') {
+      // seq136（#3）：素材字段由目标素材 picker 唯一维护；旧冗余 sel 自动推导后删除。
+      normalizeLegacyActionTargetArgs(step.args);
+    }
     if (step.op === 'if') {
       delete step.args.sel;
       delete step.args.n;
@@ -4506,25 +4827,9 @@
       root.appendChild(coordHint);
     }
     step.args = step.args || {};
-    // Only actions that actually consume `sel` get the generic top asset picker.
-    // For if/while this picker used to write a stray `args.sel`; the condition
-    // editor below owns the asset choice instead.
-    const SEL_OPS = new Set(['appear', 'ocr', 'click', 'dismiss_popup', 'ocr_to_var']);
-    if (SEL_OPS.has(step.op)) {
-      const assetLabel = document.createElement('label');
-      assetLabel.textContent = `素材（识别+操作区域；共 ${B.assets.length} 个）`;
-      const assetSearchWrap = assetSearch(step.args.sel || '');
-      const assetPick = assetSearchWrap.input;
-      assetPick.addEventListener('change', () => {
-        if (assetPick.value) {
-          step.args.sel = assetPick.value;
-          status(`已选择素材：${assetPick.value}`);
-          renderAll();
-        }
-      });
-      assetLabel.appendChild(assetSearchWrap);
-      root.appendChild(assetLabel);
-    }
+    // seq136（#3）：删除顶部重复的「素材（识别+操作区域）」picker。素材字段只在
+    // FIELDS（appear/ocr/click/dismiss_popup/ocr_to_var）或动作目标 picker
+    // （click_target/long_press）出现一次；locator/操作区域由目标素材 kind 推导。
     if (step.op === 'call_task') renderCallTaskForm(root, step);
     // P1: wait/wait_until are BLOCKING waits, not actions.
     if (step.op === 'wait' || step.op === 'wait_until') {
@@ -5076,6 +5381,12 @@
 
   function init() {
     initBuilderLayout();
+    // seq136（#9）：流程图自适应——容器尺寸变化/窗口 resize 重新 fit（不改变节点坐标）。
+    const graphRoot = $('builder-graph');
+    if (graphRoot && typeof ResizeObserver === 'function') {
+      new ResizeObserver(function () { scheduleFlowGraphFit(); }).observe(graphRoot);
+    }
+    window.addEventListener('resize', scheduleFlowGraphFit);
     const taskSel = $('builder-task');
     if (taskSel) taskSel.addEventListener('change', () => loadTask(taskSel.value));
     const reload = $('builder-reload');

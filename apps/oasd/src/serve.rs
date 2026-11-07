@@ -6228,13 +6228,10 @@ impl Server {
         if root.parent() != Some(tasks_root.as_path()) {
             return self.send_errors(out, 400, vec!["refusing to delete outside tasks dir".into()]);
         }
-        // P3: a queue member is scheduled through its queue, so deleting the
-        // bundle would leave a dangling member. Refuse before touching assets or
-        // scheduler.json; the user must edit the queue first.
-        let queue_owners = self.scheduler_queues_with_member(task);
-        if !queue_owners.is_empty() {
-            return self.send_errors(out, 400, vec![queue_member_error(task, &queue_owners)]);
-        }
+        // seq136 #4: the editor/users surface owns task deletion; Runner queue
+        // membership must NOT block it. Any queue reference is removed below
+        // (best-effort, reported as `removed_from_queues`), so both sides stay
+        // independent: deleting a task never requires editing the queue first.
         // Never lose task assets on delete. They are preserved under
         // assets/_deleted-tasks/<task>-<timestamp>/ until the user restores or
         // migrates them into the global store.
@@ -6255,8 +6252,8 @@ impl Server {
         // report a clean 200 while scheduler.json kept the stale entry). The
         // bundle is already gone at this point, so the message names that half
         // explicitly: the user has to fix the config by hand.
-        let pruned = match self.prune_scheduler_task(task) {
-            Ok(n) => n,
+        let (pruned, removed_from_queues) = match self.prune_scheduler_task(task) {
+            Ok(v) => v,
             Err(e) => {
                 self.editor_log(&format!(
                     "task_delete task={task} scheduler_prune_error={e} backup={}",
@@ -6273,7 +6270,7 @@ impl Server {
             }
         };
         self.editor_log(&format!(
-            "task_delete task={task} scheduler_entries_removed={pruned} backup={}",
+            "task_delete task={task} scheduler_entries_removed={pruned} queues_removed={removed_from_queues:?} backup={}",
             backup.as_ref().map(|p| p.display().to_string()).unwrap_or_default()
         ));
         self.send_json(
@@ -6283,6 +6280,7 @@ impl Server {
                 "ok": true,
                 "task": task,
                 "scheduler_entries_removed": pruned,
+                "removed_from_queues": removed_from_queues,
                 "asset_backup": backup.as_ref().map(|p| p.to_string_lossy().into_owned()),
             })
             .to_string(),
@@ -6352,48 +6350,59 @@ impl Server {
         Ok(Some(dest))
     }
 
-    /// Queue ids that list `task` in `queues[].members` (P3 delete guard).
+    /// Remove scheduler entries that point at a deleted task and drop it from
+    /// every queue's `members` list (seq136 #4).
     ///
-    /// A missing config means there is nothing to prune; an unreadable/invalid
-    /// config is treated as "no membership" so a stale file never blocks
-    /// deleting a task bundle (the prune below stays best-effort, as before).
-    fn scheduler_queues_with_member(&self, task: &str) -> Vec<String> {
-        let path = self.scheduler_options().config;
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            return Vec::new();
-        };
-        let Ok(config) = serde_json::from_str::<serde_json::Value>(&text) else {
-            return Vec::new();
-        };
-        queue_member_owners(&config, task)
-    }
-
-    /// Remove scheduler entries that point at a deleted task. Keeping stale
-    /// entries is confusing (the schedule page still lists deleted tasks) and
-    /// dangerous (the daemon would try to open a missing bundle).
-    ///
-    /// P3: a task still referenced by a queue is **not** pruned — the caller
-    /// must reject the delete first (removing the task would leave the queue
-    /// pointing at a missing member).
+    /// Keeping stale entries is confusing (the schedule page still lists deleted
+    /// tasks) and dangerous (the daemon would try to open a missing bundle).
+    /// Queue membership no longer blocks the delete: the task is removed from the
+    /// queues and their ids are returned so the caller can report
+    /// `removed_from_queues`.
     ///
     /// P1-2: the removal is kind-aware (a queue entry's `task` is a *queue_id*)
     /// and writes through [`write_text_atomic`]. The parsed document is edited in
     /// place, so unknown top-level/entry/queue fields survive the prune.
-    fn prune_scheduler_task(&self, task: &str) -> Result<usize, String> {
+    fn prune_scheduler_task(&self, task: &str) -> Result<(usize, Vec<String>), String> {
         let path = self.scheduler_options().config;
         let text = match std::fs::read_to_string(&path) {
             Ok(t) => t,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((0, Vec::new())),
             Err(e) => return Err(format!("read {}: {e}", path.display())),
         };
         let mut v: serde_json::Value =
             serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
-        let owners = queue_member_owners(&v, task);
-        if !owners.is_empty() {
-            return Err(queue_member_error(task, &owners));
+        // seq136 #4: a task referenced by queues is removed from the queues (the
+        // editor must not require the user to edit Runner state first). The queue
+        // objects/entries themselves are preserved; only the member disappears.
+        let mut removed_from_queues: Vec<String> = Vec::new();
+        if let Some(queues) = v.get_mut("queues").and_then(|x| x.as_array_mut()) {
+            for queue in queues.iter_mut() {
+                let queue_id = queue
+                    .get("queue_id")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let Some(members) = queue.get_mut("members").and_then(|x| x.as_array_mut()) else {
+                    continue;
+                };
+                let before = members.len();
+                members.retain(|m| m.as_str() != Some(task));
+                if members.len() != before {
+                    removed_from_queues.push(queue_id);
+                }
+            }
         }
+        removed_from_queues.sort();
         let Some(entries) = v.get_mut("entries").and_then(|x| x.as_array_mut()) else {
-            return Ok(0);
+            // No entries array but a queue was edited: still persist the queue
+            // cleanup (the config is a v4 document with unknown fields preserved).
+            if !removed_from_queues.is_empty() {
+                let text = serde_json::to_string_pretty(&v)
+                    .map_err(|e| format!("serialize {}: {e}", path.display()))?;
+                write_text_atomic(&path, &(text + "\n"))
+                    .map_err(|e| format!("write {}: {e}", path.display()))?;
+            }
+            return Ok((0, removed_from_queues));
         };
         let before = entries.len();
         entries.retain(|e| {
@@ -6405,13 +6414,13 @@ impl Server {
             !(kind == "task" && e.get("task").and_then(|x| x.as_str()) == Some(task))
         });
         let removed = before - entries.len();
-        if removed > 0 {
+        if removed > 0 || !removed_from_queues.is_empty() {
             let text = serde_json::to_string_pretty(&v)
                 .map_err(|e| format!("serialize {}: {e}", path.display()))?;
             write_text_atomic(&path, &(text + "\n"))
                 .map_err(|e| format!("write {}: {e}", path.display()))?;
         }
-        Ok(removed)
+        Ok((removed, removed_from_queues))
     }
 
     /// v1.1 P3: current deployment config (settings page).
@@ -11799,13 +11808,6 @@ fn queue_member_owners(config: &serde_json::Value, task: &str) -> Vec<String> {
 }
 
 /// Stable 400 message for deleting a task that a queue still schedules.
-fn queue_member_error(task: &str, owners: &[String]) -> String {
-    format!(
-        "task `{task}` is a queue member of `{}`; edit the queue first",
-        owners.join("`, `")
-    )
-}
-
 /// `passes` / `last_pass_ms` from the persisted scheduler state (PR6 status).
 /// Read-only and tolerant: a missing/corrupt state file is `None`, never an
 /// error (`/runner/health` must answer before the first pass).
@@ -18510,19 +18512,22 @@ mod tests {
     }
 
     #[test]
-    fn task_delete_rejects_a_queue_member() {
+    fn task_delete_removes_queue_membership_without_being_blocked() {
+        // seq136 #4: deleting a task referenced by (multiple) queues succeeds and
+        // the queue members are cleaned up; the response reports removed queues.
         let td = TempDir::new("sched-delete-member");
         let tasks_dir = td.path().join("tasks");
         let server = studio_scheduler_server(
             td.path(),
             Some(&scheduler_config(
                 serde_json::json!([]),
-                serde_json::json!([queue_fixture("q1", &["memberA"])]),
+                serde_json::json!([
+                    queue_fixture("q1", &["memberA"]),
+                    queue_fixture("q2", &["other", "memberA"]),
+                ]),
             )),
         );
         make_task(&tasks_dir, "memberA");
-        let config_path = td.path().join("scheduler.json");
-        let before = std::fs::read(&config_path).expect("read config");
 
         let (status, body) = post_route(
             &server,
@@ -18530,26 +18535,70 @@ mod tests {
             "application/json",
             br#"{"task":"memberA"}"#,
         );
-        assert!(status.contains("400"), "{status} {body}");
-        let v: serde_json::Value = serde_json::from_str(&body).expect("error json");
-        assert_eq!(v["ok"], false);
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("delete json");
+        assert_eq!(v["ok"], true);
         assert_eq!(
-            v["errors"][0].as_str(),
-            Some("task `memberA` is a queue member of `q1`; edit the queue first")
+            v["removed_from_queues"],
+            serde_json::json!(["q1", "q2"]),
+            "{body}"
         );
         assert!(
-            tasks_dir.join("memberA").is_dir(),
-            "a queue member bundle must not be deleted"
+            !tasks_dir.join("memberA").is_dir(),
+            "the queue membership must not block the delete"
+        );
+        let on_disk: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(td.path().join("scheduler.json")).expect("read config"),
+        )
+        .expect("config json");
+        assert_eq!(
+            on_disk["queues"][0]["members"],
+            serde_json::json!([]),
+            "{on_disk}"
         );
         assert_eq!(
-            std::fs::read(&config_path).expect("read config after 400"),
-            before,
-            "scheduler.json must not be partially modified"
+            on_disk["queues"][1]["members"],
+            serde_json::json!(["other"]),
+            "{on_disk}"
         );
+        assert_eq!(on_disk["entries"], serde_json::json!([]), "{on_disk}");
+    }
+
+    #[test]
+    fn runner_queue_config_edits_do_not_touch_task_bundles() {
+        // The two surfaces stay independent: removing a queue on the Runner side
+        // (editing scheduler.json) leaves the task bundle intact.
+        let td = TempDir::new("sched-queue-independent");
+        let tasks_dir = td.path().join("tasks");
+        let server = studio_scheduler_server(
+            td.path(),
+            Some(&scheduler_config(
+                serde_json::json!([]),
+                serde_json::json!([queue_fixture("q1", &["keep"])]),
+            )),
+        );
+        make_task(&tasks_dir, "keep");
+        // Simulate the Runner deleting/emptying the queue.
+        let config = scheduler_config(serde_json::json!([]), serde_json::json!([]));
+        std::fs::write(
+            td.path().join("scheduler.json"),
+            serde_json::to_string_pretty(&config).expect("json") + "\n",
+        )
+        .expect("write queue-less config");
         assert!(
-            !td.path().join("assets/_deleted-tasks").exists(),
-            "the refusal happens before any asset backup"
+            tasks_dir.join("keep").is_dir(),
+            "a Runner queue edit must not remove the task"
         );
+        // And a later editor delete sees no queue membership.
+        let (status, body) = post_route(
+            &server,
+            "/task/delete",
+            "application/json",
+            br#"{"task":"keep"}"#,
+        );
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("delete json");
+        assert_eq!(v["removed_from_queues"], serde_json::json!([]), "{body}");
     }
 
     #[test]

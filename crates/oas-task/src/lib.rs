@@ -3449,7 +3449,11 @@ impl TaskBundle {
             }
             // T3: every param('key') must be declared in meta.variables (V2.0:
             // `meta.params` no longer counts; T10 reports legacy rows separately).
-            let params = meta.declared_input_variable_keys();
+            //
+            // seq136 #7: use ALL declared variable keys, not only input-scope ones:
+            // a `runtime`-scope variable is still a legal `param('key')` reference
+            // (个人突破's `jiejietupo`). Only genuinely undeclared keys are T3.
+            let params = meta.declared_variable_keys();
             let listed_params = join_or_none(&params);
             for site in flow.param_uses_at() {
                 match site.key {
@@ -6635,6 +6639,41 @@ mod tests {
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert_eq!(warnings[0].code, "T10");
         assert_eq!(warnings[0].path, "meta.json:params");
+    }
+
+    #[test]
+    fn t3_accepts_runtime_scope_variables_and_still_flags_undeclared_keys() {
+        // seq136 #7: `param('jiejietupo')` where jiejietupo is a runtime-scope
+        // variable must NOT be T3 (个人突破 false positive). Only genuinely
+        // undeclared keys are flagged.
+        let td = TempDir::new("t3scope");
+        let b = open(&td);
+        write_flow_only_bundle(
+            &b,
+            r#"{"schema_version":1,"name":"任务1","variables":[
+                 {"key":"jiejietupo","type":"int","scope":"runtime","default":0},
+                 {"key":"k","type":"string","default":"完成"}]}"#,
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"if","args":{"cond":"param('jiejietupo') > 0"},"then":[]},
+                 {"op":"log","args":{"text":"param('k')"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        b.lint().expect("runtime-scope + input variables are both declared");
+        // Truly undeclared keys still fail, and the message lists all declared keys.
+        write_flow_only_bundle(
+            &b,
+            r#"{"schema_version":1,"name":"任务1","variables":[
+                 {"key":"jiejietupo","type":"int","scope":"runtime","default":0}]}"#,
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"if","args":{"cond":"param('jiejietupo') > 0"},"then":[]},
+                 {"op":"if","args":{"cond":"param('missing_key') > 0"},"then":[]},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        let issues = b.lint().expect_err("missing_key is undeclared");
+        let t3: Vec<&LintIssue> = issues.iter().filter(|i| i.code == "T3").collect();
+        assert_eq!(t3.len(), 1, "{issues:?}");
+        assert!(t3[0].path.contains("steps[1]"), "{}", t3[0]);
+        assert!(t3[0].msg.contains("missing_key"), "{}", t3[0]);
     }
 
     #[test]

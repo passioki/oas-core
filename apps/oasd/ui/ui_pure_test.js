@@ -4941,11 +4941,17 @@ const BUILDER_TARGET_PURE = [
   'actionTargetParamRows', 'variableUseCount', 'variableDefaultText',
   'variableFormToBody', 'literalDefaultFromText', 'variableToForm',
   'collectParamUses',
+  // seq136（#3/#9/#10）：旧目标字段兼容、流程图自适应、同层拖动排序。
+  'normalizeLegacyActionTargetArgs',
+  'fitFlowGraphSize', 'svgPointInViewBox',
+  'stepUiId', 'stepPathById', 'moveStepWithinParent',
+  'dragInsertionIndex', 'sameParentGraphNodes', 'flowDropIndicatorGeometry',
 ];
 const targetSb = {};
 vm.createContext(targetSb);
 vm.runInContext(
-  BUILDER_TARGET_PURE.map((name) => extractFunctionFrom(builderSource, name, 'builder.js')).join('\n'),
+  'let nextStepUiId = 1;\n' +
+    BUILDER_TARGET_PURE.map((name) => extractFunctionFrom(builderSource, name, 'builder.js')).join('\n'),
   targetSb,
   { filename: 'builder.js#targets' }
 );
@@ -8943,6 +8949,141 @@ ok(
 ok(
   /recognitionPolygonPayload/.test(source) && /polygon/.test(source),
   'seq134: the save payload still carries the polygon (image file itself remains a rect crop; UI masks it)'
+);
+
+// --- seq136（#3/#9/#10）：去冗余素材字段 / 流程图自适应 / 同层拖动排序 ---------
+// #3：旧 flow 冗余 sel 自动推导为 locator 后删除，不阻塞保存。
+const legacyTarget = { args: { sel: 'I_模板' } };
+eq(targetSb.normalizeLegacyActionTargetArgs(legacyTarget.args),
+  { find: [{ kind: 'template', sel: 'I_模板' }] },
+  'seq136: a legacy redundant args.sel derives find[0] and is removed');
+eq(Object.prototype.hasOwnProperty.call(legacyTarget.args, 'sel'), false,
+  'seq136: the redundant sel field is gone after normalization');
+const legacyWithFind = { args: { sel: 'I_旧', find: [{ kind: 'template', sel: 'I_保留' }] } };
+eq(targetSb.normalizeLegacyActionTargetArgs(legacyWithFind.args),
+  { find: [{ kind: 'template', sel: 'I_保留' }] },
+  'seq136: an existing locator wins over the redundant sel (sel removed)');
+eq(targetSb.normalizeLegacyActionTargetArgs({ find: [{ kind: 'template', sel: 'I_A' }] }),
+  { find: [{ kind: 'template', sel: 'I_A' }] },
+  'seq136: steps without the redundant sel are untouched');
+ok(
+  !/const SEL_OPS = new Set/.test(builderSource) &&
+    !/素材（识别\+操作区域；共/.test(builderSource) &&
+    !/assetSearch\(loc\.sel/.test(extractFunctionFrom(builderSource, 'structuredClickTarget', 'builder.js')) &&
+    !/assetLab\.textContent = '素材\/操作区域'/.test(builderSource),
+  'seq136: the duplicate 素材（识别+操作区域） picker and second asset search are gone'
+);
+ok(
+  /normalizeLegacyActionTargetArgs\(step\.args\)/.test(extractFunctionFrom(builderSource, 'normalizeStepArgs', 'builder.js')) &&
+    /normalizeFlow\(B\.flow\)/.test(extractFunctionFrom(builderSource, 'saveFlow', 'builder.js')),
+  'seq136: load/save normalize legacy action-target fields (ignored/derived, never blocking)'
+);
+ok(
+  /actionTargetEditor\(root, step\)/.test(extractFunctionFrom(builderSource, 'structuredClickTarget', 'builder.js')) &&
+    /targetLocatorForAsset\(asset\)/.test(extractFunctionFrom(builderSource, 'actionTargetEditor', 'builder.js')),
+  'seq136: the single target-asset picker derives the locator from the asset kind'
+);
+// #9：流程图 SVG fit/居中/自适应。
+eq(targetSb.fitFlowGraphSize(500, 500, 1000, 500),
+  { scale: 1, width: 1000, height: 500, offsetX: 250, offsetY: 0 },
+  'seq136: fitFlowGraphSize fits and centers content in the container');
+eq(targetSb.fitFlowGraphSize(500, 500, 2000, 2000).scale, 1.6,
+  'seq136: fit scales up but never beyond the max scale');
+eq(targetSb.fitFlowGraphSize(500, 500, 0, 0).scale, 0.1,
+  'seq136: a zero container falls back to the min scale (never zero)');
+eq(targetSb.svgPointInViewBox(110, 70, { left: 10, top: 20, width: 200, height: 100 },
+  { x: 0, y: 0, width: 1000, height: 500 }), { x: 500, y: 250 },
+  'seq136: client coordinates map into the SVG viewBox under container scaling');
+ok(
+  /viewBox: `0 0 \$\{width\} \$\{height\}`/.test(extractFunctionFrom(builderSource, 'renderGraph', 'builder.js')) &&
+    /preserveAspectRatio: 'xMidYMid meet'/.test(extractFunctionFrom(builderSource, 'renderGraph', 'builder.js')) &&
+    /fitFlowGraph\(\)/.test(extractFunctionFrom(builderSource, 'renderGraph', 'builder.js')) &&
+    /flowGraphState\.width = width/.test(extractFunctionFrom(builderSource, 'renderGraph', 'builder.js')),
+  'seq136: renderGraph keeps node coords in viewBox and fits the container'
+);
+ok(
+  /new ResizeObserver\(/.test(extractFunctionFrom(builderSource, 'init', 'builder.js')) &&
+    /addEventListener\('resize', scheduleFlowGraphFit\)/.test(extractFunctionFrom(builderSource, 'init', 'builder.js')),
+  'seq136: container resize + window resize re-run the fit'
+);
+ok(
+  /function fitFlowGraphSize\(naturalW, naturalH, containerW, containerH, opts\)/.test(builderSource) &&
+    /function fitFlowGraph\(\)/.test(builderSource) &&
+    /function scheduleFlowGraphFit\(\)/.test(builderSource),
+  'seq136: the adaptive fit helpers exist'
+);
+ok(
+  !/max-height: 320px/.test(styleCss) && !/min-width: 760px/.test(styleCss) &&
+    /height: clamp\(260px, 42vh, 68vh\)/.test(styleCss) &&
+    /\.flow-svg[\s\S]{0,220}height: 100%/.test(styleCss),
+  'seq136: CSS makes the flow graph container/viewport adaptive instead of fixed size'
+);
+// #10：同层拖动排序纯函数 + 选中 id 跟随。
+const dragSteps = [{ op: 'a' }, { op: 'b' }, { op: 'c' }, { op: 'd' }];
+const dragIds = dragSteps.map((s) => targetSb.stepUiId(s));
+eq(dragIds, ['s1', 's2', 's3', 's4'], 'seq136: steps receive stable client-side ids');
+eq(JSON.stringify(dragSteps), '[{"op":"a"},{"op":"b"},{"op":"c"},{"op":"d"}]',
+  'seq136: the client-side step id is non-enumerable (never saved into flow.json)');
+eq(targetSb.stepPathById(dragSteps, dragIds[2]), [2], 'seq136: stepPathById finds a root step path');
+eq(targetSb.stepPathById(dragSteps, 'missing'), null, 'seq136: a missing id yields no path');
+const moveRoot = [{ op: 'a' }, { op: 'b' }, { op: 'c' }];
+moveRoot.forEach((s) => targetSb.stepUiId(s));
+const moveB = targetSb.moveStepWithinParent(moveRoot, [1], 3);
+eq(moveB.ok, true, 'seq136: a same-level move succeeds');
+eq(moveRoot.map((s) => s.op), ['a', 'c', 'b'], 'seq136: moving b to the end reorders siblings');
+eq(targetSb.stepPathById(moveRoot, targetSb.stepUiId(moveRoot[2])), [2],
+  'seq136: the moved step can be found again by id after reordering');
+const moveFirst = [{ op: 'a' }, { op: 'b' }, { op: 'c' }];
+moveFirst.forEach((s) => targetSb.stepUiId(s));
+targetSb.moveStepWithinParent(moveFirst, [2], 0);
+eq(moveFirst.map((s) => s.op), ['c', 'a', 'b'], 'seq136: moving a step to the head works');
+const nestedMove = {
+  op: 'if', args: {}, then: [{ op: 't1' }, { op: 't2' }], else: [],
+};
+nestedMove.then.forEach((s) => targetSb.stepUiId(s));
+targetSb.moveStepWithinParent([nestedMove], [0, 'then', 0], 2);
+eq(nestedMove.then.map((s) => s.op), ['t2', 't1'],
+  'seq136: if/then child steps support same-level drag ordering');
+eq(targetSb.moveStepWithinParent([], [], 0).ok, false,
+  'seq136: an empty path (root) is not draggable');
+const nodes = [{ path: [0], y: 0, h: 100 }, { path: [1], y: 120, h: 100 }, { path: [2], y: 240, h: 100 }];
+eq(targetSb.dragInsertionIndex(nodes, 40), 0, 'seq136: dragging above the first node inserts at head');
+eq(targetSb.dragInsertionIndex(nodes, 160), 1, 'seq136: below a node midline inserts after it');
+eq(targetSb.dragInsertionIndex(nodes, 999), 3, 'seq136: dragging below all nodes inserts at tail');
+eq(targetSb.dragInsertionIndex([], 10), 0, 'seq136: no siblings => index 0');
+eq(targetSb.sameParentGraphNodes([
+  { path: [0], y: 10, h: 10 }, { path: [1], y: 0, h: 10 }, { path: [0, 'then', 0], y: 5, h: 5 },
+], []), [{ path: [1], y: 0, h: 10 }, { path: [0], y: 10, h: 10 }],
+  'seq136: graph nodes are filtered by parent and sorted by y');
+eq(targetSb.flowDropIndicatorGeometry(nodes, 0).y, -6,
+  'seq136: the insertion indicator sits above the first sibling for head drops');
+eq(targetSb.flowDropIndicatorGeometry(nodes, 3).y, 346,
+  'seq136: the indicator sits below the last sibling for tail drops');
+eq(targetSb.flowDropIndicatorGeometry([], 0), null,
+  'seq136: no siblings => no indicator');
+ok(
+  /setAttribute\('draggable', 'true'\)/.test(extractFunctionFrom(builderSource, 'renderSvgNode', 'builder.js')) &&
+    /addEventListener\('dragstart'/.test(extractFunctionFrom(builderSource, 'renderSvgNode', 'builder.js')) &&
+    /applyStepDragDrop\(getRoot\(\), sourcePath, sameParent, pt\.y\)/.test(extractFunctionFrom(builderSource, 'renderGraph', 'builder.js')) &&
+    /flow-drop-indicator/.test(extractFunctionFrom(builderSource, 'renderGraph', 'builder.js')),
+  'seq136: flow nodes are draggable and render the same-level insertion indicator'
+);
+ok(
+  /function applyStepDragDrop\(rootSteps, sourcePath, siblingNodes, pointerY\)/.test(builderSource) &&
+    /const selectedBefore = getStep\(B\.selected\)/.test(builderSource) &&
+    /B\.selected = stepPathById\(rootSteps, selectedId\) \|\| B\.selected/.test(builderSource) &&
+    /function scrollSelectedStepIntoView\(\)/.test(builderSource) &&
+    /scrollIntoView\(/.test(builderSource),
+  'seq136: after a drop the selection is recomputed by step id and scrolled into view'
+);
+ok(
+  /'上移'/.test(builderSource) && /'下移'/.test(builderSource) && /function moveStepTo\(/.test(builderSource),
+  'seq136: the existing up/down arrow moves are preserved alongside drag ordering'
+);
+ok(
+  /scheduleAutoSave\(\)/.test(extractFunctionFrom(builderSource, 'applyStepDragDrop', 'builder.js')) &&
+    (builderSource.match(/scheduleAutoSave\(\);/g) || []).length >= 3,
+  'seq136: drag/arrow reorders schedule an auto-save (selection/state changes are persisted)'
 );
 
 // --- DOM id audit（Studio shell；D 批删除了参数面板/配置项对话框相关 id） -------

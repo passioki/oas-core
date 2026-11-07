@@ -879,7 +879,14 @@ aside.side {
 .builder-step .rowbtns { margin-left: 6px; }
 .builder-step .rowbtns button { width: auto; display: inline-block; margin: 0 2px 0 0; padding: 1px 5px; font-size: 11px; }
 .builder-children { margin-left: 14px; border-left: 1px dashed #3a4250; padding-left: 8px; }
-.builder-graph { margin-top: 8px; max-height: 320px; overflow: auto; }
+/* seq136（#9）：流程图容器自适应（高度随视口，内容按 SVG viewBox fit/居中）。 */
+.builder-graph {
+  margin-top: 8px;
+  height: clamp(260px, 42vh, 68vh);
+  overflow: hidden;
+  display: flex;
+  align-items: stretch;
+}
 .graph-node { border: 1px solid #3a5f86; border-radius: 6px; padding: 3px 6px; margin: 4px 0; background: #17222e; font-size: 12px; }
 .graph-node.control { border-color: #8a6a2a; background: #241f15; }
 .graph-arrow { color: #5f7ea0; text-align: center; font-size: 12px; }
@@ -909,9 +916,18 @@ aside.side {
 .fg-loop-body { border-left: 2px dashed #8a6a2a; margin-left: 16px; padding: 4px 0 4px 8px; }
 .fg-backedge { color: #c49a3a; font-size: 11px; margin-top: 3px; }
 
-/* v1.2.3 R9: real SVG control-flow graph */
-.builder-graph { max-height: 68vh; overflow: auto; }
-.flow-svg { display: block; min-width: 760px; background: #0f141a; border: 1px solid #2b2f38; border-radius: 8px; }
+/* v1.2.3 R9: real SVG control-flow graph; seq136（#9）容器自适应铺满 */
+.builder-graph { max-height: 68vh; overflow: hidden; }
+.flow-svg {
+  display: block;
+  flex: 1 1 auto;
+  min-width: 0;
+  width: 100%;
+  height: 100%;
+  background: #0f141a;
+  border: 1px solid #2b2f38;
+  border-radius: 8px;
+}
 .flow-svg-shape { fill: #1b2530; stroke: #4b6b8a; stroke-width: 1.6; }
 .flow-svg-shape.decision { fill: #2a2416; stroke: #b08a3a; stroke-width: 1.8; }
 .flow-svg-shape.junction { fill: #0f141a; stroke: #7c8b9e; stroke-width: 1.5; }
@@ -926,6 +942,15 @@ aside.side {
 .flow-svg-arrow { fill: #7c8b9e; }
 .flow-svg-node.clickable { cursor: pointer; }
 .flow-svg-node.selected .flow-svg-shape { stroke: #e0a040; stroke-width: 2.6; }
+/* seq136（#10）：同层拖动排序的插入指示线/拖动中状态 */
+.flow-svg-node { cursor: grab; }
+.flow-svg-node.dragging { opacity: 0.5; cursor: grabbing; }
+.flow-drop-indicator {
+  stroke: #ffd54a;
+  stroke-width: 3;
+  stroke-dasharray: 6 3;
+  pointer-events: none;
+}
 .candidate-select-all { display: flex; align-items: center; gap: 6px; margin: 4px 0; }
 .candidate-select-all input { width: auto; margin: 0; }
 .builder-child-add { display: flex; gap: 6px; align-items: center; margin: 4px 0; }

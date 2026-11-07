@@ -825,6 +825,26 @@ pub struct OcrLine {
 // ---------------------------------------------------------------------------
 
 /// Centre of a rect (`i64` math, clamped back into `i32`).
+/// Are two OCR boxes the same recognized line (seq136 #6 dedupe)?
+///
+/// The ROI det+rec and the whole-frame det+rec can report the same line with a
+/// slightly different box (padding/merge), so a small overlap ratio is not
+/// enough: require at least 60% of the smaller box to be shared.
+fn rects_mostly_same(a: Rect, b: Rect) -> bool {
+    let x1 = a.x.max(b.x);
+    let y1 = a.y.max(b.y);
+    let x2 = (a.x + a.w).min(b.x + b.w);
+    let y2 = (a.y + a.h).min(b.y + b.h);
+    let iw = x2 - x1;
+    let ih = y2 - y1;
+    if iw <= 0 || ih <= 0 {
+        return false;
+    }
+    let inter = (iw as i64 * ih as i64) as f32;
+    let smaller = (a.w as i64 * a.h as i64).min(b.w as i64 * b.h as i64) as f32;
+    smaller > 0.0 && inter / smaller >= 0.6
+}
+
 fn rect_centre(r: Rect) -> Point {
     Point {
         x: (r.x as i64 + r.w as i64 / 2).clamp(i32::MIN as i64, i32::MAX as i64) as i32,
@@ -2621,15 +2641,40 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         let mut out = Vec::new();
         match expected.as_deref() {
             Some(expected) => {
-                // seq134 #3: with expected text the candidates come from the WHOLE
-                // FRAME (strict normalized equality); ROI hits are annotated.
-                let lines = self.ocr_lines_for(id, true)?;
-                for line in matching_ocr_lines_strict(&lines, expected, threshold) {
+                // seq136 #6: the whole-frame det can miss narrow vertical text
+                // that the ROI det reads correctly (结界突破 right-edge 个人 sign).
+                // Enumerate BOTH the declared ROI and the whole frame, merge and
+                // dedupe; ROI hits are `domain=roi`, outside-ROI hits are
+                // `screen_fallback`. Strict expected text + threshold still apply.
+                let roi_lines = self.ocr_lines_for(id, false)?;
+                let full_lines = self.ocr_lines_for(id, true)?;
+                let mut added: Vec<OcrLine> = Vec::new();
+                for line in matching_ocr_lines_strict(&roi_lines, expected, threshold) {
+                    // A real ROI provider only returns in-ROI lines; this guard
+                    // keeps the annotation honest even for a permissive fake/test
+                    // provider (seq136 #6).
                     let domain = match declared {
                         None => CandidateDomain::Screen,
                         Some(roi) if rect_inside_rect(roi, line.rect) => CandidateDomain::Roi,
                         Some(_) => CandidateDomain::ScreenFallback,
                     };
+                    added.push(line.clone());
+                    out.push(self.ocr_candidate_from_line(id, line, domain, frame_size)?);
+                }
+                let mut seen_roi: Vec<OcrLine> = added.clone();
+                for line in matching_ocr_lines_strict(&full_lines, expected, threshold) {
+                    if seen_roi
+                        .iter()
+                        .any(|prev| rects_mostly_same(prev.rect, line.rect))
+                    {
+                        continue; // the ROI read already produced this line
+                    }
+                    let domain = match declared {
+                        None => CandidateDomain::Screen,
+                        Some(roi) if rect_inside_rect(roi, line.rect) => CandidateDomain::Roi,
+                        Some(_) => CandidateDomain::ScreenFallback,
+                    };
+                    seen_roi.push(line.clone());
                     out.push(self.ocr_candidate_from_line(id, line, domain, frame_size)?);
                 }
             }
@@ -15397,6 +15442,168 @@ mod tests {
                 .cloned()
                 .collect())
         }
+    }
+
+    /// seq136 #6 provider: the ROI det reads the narrow vertical 「个人」 sign,
+    /// while the whole-frame det misses it (the real 结界突破 right-edge case) and
+    /// reports an unrelated shifted duplicate instead.
+    struct RoiVsFullDetOcr {
+        roi: Rect,
+        roi_lines: Vec<OcrLine>,
+        full_lines: Vec<OcrLine>,
+    }
+
+    impl OcrProvider for RoiVsFullDetOcr {
+        fn recognize(&mut self, _frame: &Frame, _roi: Rect) -> Result<(String, f32), String> {
+            Err("RoiVsFullDetOcr only supports det+rec".into())
+        }
+
+        fn recognize_lines(&mut self, _frame: &Frame, roi: Rect) -> Result<Vec<OcrLine>, String> {
+            if roi == self.roi {
+                Ok(self.roi_lines.clone())
+            } else {
+                Ok(self.full_lines.clone())
+            }
+        }
+    }
+
+    #[test]
+    fn ocr_expected_candidates_merge_roi_and_full_frame_detections() {
+        // seq136 #6: ROI det finds 个人, whole-frame det does not. Candidates must
+        // merge both domains (ROI result survives), and the whole-frame duplicate
+        // of the same line must be deduped.
+        let declared = Rect {
+            x: 1212,
+            y: 266,
+            w: 37,
+            h: 76,
+        };
+        let mut set = AssetSet::new();
+        set.insert_ocr("O_vert", declared);
+        set.set_ocr_expected_text("O_vert", "个人".to_string());
+        let roi_line = OcrLine {
+            rect: Rect {
+                x: 1215,
+                y: 270,
+                w: 30,
+                h: 60,
+            },
+            text: "个人".to_string(),
+            score: 0.9999,
+        };
+        // Whole-frame det: no 个人 (only an unrelated line), as in the probe.
+        let full_lines = vec![OcrLine {
+            rect: Rect {
+                x: 1185,
+                y: 186,
+                w: 47,
+                h: 32,
+            },
+            text: "阵容".to_string(),
+            score: 0.99,
+        }];
+        let provider = RoiVsFullDetOcr {
+            roi: declared,
+            roi_lines: vec![roi_line.clone()],
+            full_lines,
+        };
+        let (input, _shared) = FakeInput::new();
+        let mut interp = Interpreter::new(
+            TwoFrameScreen {
+                frames: vec![blank_frame_1280x720()],
+                idx: 0,
+            },
+            input,
+            set,
+            Budget::default(),
+        )
+        .with_humanize(no_miss())
+        .with_ocr(Box::new(provider));
+        let cands = interp
+            .recognition_candidates("O_vert")
+            .expect("merged candidates");
+        assert_eq!(cands.len(), 1, "ROI hit must survive: {cands:?}");
+        assert_eq!(cands[0].text.as_deref(), Some("个人"));
+        assert_eq!(cands[0].domain, CandidateDomain::Roi);
+        assert_eq!(
+            (cands[0].x, cands[0].y, cands[0].w, cands[0].h),
+            (1215, 270, 30, 60)
+        );
+        // test_action/preview uses the SAME candidate list/index/geometry.
+        let preview = interp
+            .preview_asset_action("O_vert", None)
+            .expect("preview");
+        assert_eq!(
+            preview.real,
+            Some(Rect {
+                x: 1215,
+                y: 270,
+                w: 30,
+                h: 60
+            })
+        );
+        assert_eq!(preview.action_box, cands[0].action_box);
+        assert_eq!(preview.steps[0].text.as_deref(), Some("个人"));
+        // recognize_best keeps ROI strict priority.
+        let best = interp.recognize_best("O_vert").expect("recognize best");
+        assert_eq!(best.text.as_deref(), Some("个人"));
+        assert_eq!(best.domain, CandidateDomain::Roi);
+    }
+
+    #[test]
+    fn ocr_expected_candidates_dedupe_the_same_line_from_both_domains() {
+        // The full-frame det may still report the same line with a slightly
+        // different box; the merge must not double-list it.
+        let declared = Rect {
+            x: 100,
+            y: 100,
+            w: 40,
+            h: 60,
+        };
+        let mut set = AssetSet::new();
+        set.insert_ocr("O_dup", declared);
+        set.set_ocr_expected_text("O_dup", "个人".to_string());
+        let roi_line = OcrLine {
+            rect: Rect {
+                x: 104,
+                y: 104,
+                w: 32,
+                h: 52,
+            },
+            text: "个人".to_string(),
+            score: 0.9998,
+        };
+        let full_line = OcrLine {
+            rect: Rect {
+                x: 106,
+                y: 106,
+                w: 30,
+                h: 48,
+            },
+            text: "个人".to_string(),
+            score: 0.9997,
+        };
+        let provider = RoiVsFullDetOcr {
+            roi: declared,
+            roi_lines: vec![roi_line],
+            full_lines: vec![full_line],
+        };
+        let (input, _shared) = FakeInput::new();
+        let mut interp = Interpreter::new(
+            TwoFrameScreen {
+                frames: vec![blank_frame_1280x720()],
+                idx: 0,
+            },
+            input,
+            set,
+            Budget::default(),
+        )
+        .with_humanize(no_miss())
+        .with_ocr(Box::new(provider));
+        let cands = interp.recognition_candidates("O_dup").expect("candidates");
+        assert_eq!(cands.len(), 1, "same line must be deduped: {cands:?}");
+        assert_eq!(cands[0].domain, CandidateDomain::Roi);
+        assert_eq!((cands[0].x, cands[0].y), (104, 104));
     }
 
     #[test]
