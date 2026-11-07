@@ -1,16 +1,16 @@
 # 会话交接单（SESSION HANDOFF）★ 一页纸
 
-> ★ 新会话先读 `docs/START-HERE.md` → `docs/RESUME.md` → `docs/RESUME-INDEX.md` 最新行（**seq 132，✅ done：集合成员扩展到所有素材**），然后按需看 `docs/ENGINE-DESIGN.md §22.71`（seq132）/ §22.70（seq131）/ §22.69（seq130）/ §22.68（seq129）/ §22.67（V2.0）、`docs/ACCEPTANCE-2026-11-06.md`（seq130 追加）、`PENDING-LEDGER §E-100/§E-99`、`VARIABLES-V2-DESIGN §10`、`OPERATION-REGION-DESIGN §8.9`。
-> **状态：done（seq 132）——素材集合成员扩展到所有素材（template/OCR/ocr_var/region）**：`7229c59`；workspace **980/0**、UI **2407/190/0 dead/158 runner/6 nav**；混合集合冒烟 candidates=5 / match winner OCR / test_action index0/1；只推送不发布（未 tag/未 release）。
+> ★ 新会话先读 `docs/START-HERE.md` → `docs/RESUME.md` → `docs/RESUME-INDEX.md` 最新行（**seq 133，✅ done：点测/拖测卡死修复 + 文字素材多候选**），然后按需看 `docs/ENGINE-DESIGN.md §22.72`（seq133）/ §22.71（seq132）/ §22.70（seq131）/ §22.69（seq130）/ §22.68（seq129）/ §22.67（V2.0）、`docs/ACCEPTANCE-2026-11-06.md`（seq130 追加）、`PENDING-LEDGER §E-102/§E-101/§E-100`、`VARIABLES-V2-DESIGN §10`、`OPERATION-REGION-DESIGN §8.9`。
+> **状态：done（seq 133）——ADB 操作超时（点测/拖测卡死修复）+ OCR 文字素材多候选**：`9323ace`；workspace **984/0**、UI **2428/190/0 dead/158 runner/6 nav**；冒烟假 ADB 超时 15.1s 返回 400 且服务恢复、OCR 多候选 pass 置顶；只推送不发布（未 tag/未 release）。
 
 ## 0. 当前状态（2026-11-07 08:2x，seq 131 done）
 
 | 项 | 值 |
 |---|---|
-| 分支 / HEAD | oas-core `dev`；代码 `7229c59`（dev/main 已同步）；oas-runner 独立仓仍 `768a8b7`（pin `ba6813e`，未随 seq126~130 更新）；未 tag / 未 release |
-| 任务 | **seq132 已完成**：集合成员扩展为所有素材（template/OCR/ocr_var/region；嵌套禁止）——素材设置菜单「加入集合」（template 专用）+ `#collection-add-dialog`（已有集合/新建集合；跨集合先移出旧集合；保留 threshold/action_shape；保存后刷新两侧库并提示 tasks_rewritten）；任务库/全局库/帧详情三处接线 |
-| 测试 | `cargo test --workspace` **972 passed / 0 failed**（本轮无 Rust 改动）；UI **2407 checks / 190 ids / 0 dead / 158 runner ids / 6 nav**；workspace **980/0**；cargo check --features ocr exit 0；冒烟 `_verify\seq132-collection-mixed\`（candidates=5/match/test_action） |
-| 权威文档 | **`ENGINE §22.71`（seq132）· `ACCEPTANCE-2026-11-06.md`（seq132 追加）· `PENDING §E-100` · `OPERATION-REGION-DESIGN §8.9`** |
+| 分支 / HEAD | oas-core `dev`；代码 `9323ace`（dev/main 已同步）；oas-runner 独立仓仍 `768a8b7`（pin `ba6813e`，未随 seq126~130 更新）；未 tag / 未 release |
+| 任务 | **seq133 已完成**：adb 超时修复（真实点测/拖测卡死）+ OCR 文字素材多候选（全部行/pass 优先）；#1 常驻弹窗识别记档不实现——素材设置菜单「加入集合」（template 专用）+ `#collection-add-dialog`（已有集合/新建集合；跨集合先移出旧集合；保留 threshold/action_shape；保存后刷新两侧库并提示 tasks_rewritten）；任务库/全局库/帧详情三处接线 |
+| 测试 | `cargo test --workspace` **972 passed / 0 failed**（本轮无 Rust 改动）；UI **2428 checks / 190 ids / 0 dead / 158 runner ids / 6 nav**；workspace **984/0**；cargo check --features ocr exit 0；冒烟 `_verify\seq133-ocr-candidates\`（假 ADB 超时 400/15.1s；OCR 多候选 count=51/pass 置顶） |
+| 权威文档 | **`ENGINE §22.72`（seq133）· `ACCEPTANCE-2026-11-06.md`（seq133 追加）· `PENDING §E-102/§E-101` · `OPERATION-REGION-DESIGN §8.9`** |
 | 发行包 | 按用户「推送即可，不用发布」**未重打/未上传**；本地产物不含 seq126~130 新能力（package_schema=2 旧包被拒绝） |
 | 独立仓 | `https://github.com/passioki/oas-runner`（`768a8b7`）；pin `ba6813e`（未打独立包；如需独立 Runner 需 bump pin + 根启动脚本 + V2 变量模型重打） |
 | 服务 | 无 `oasd`/`oasd-runner` 进程；8787~8809 无监听（冒烟后确认） |

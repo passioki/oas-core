@@ -217,3 +217,10 @@ E2E seq127 脚本（并清理 seq126 模型 A 断言）、masked 极端 mask 兜
 - 实现 7229c59：成员允许 template/ocr_line/ocr_lines/ocr_var/region（嵌套集合拒绝）；runtime/serve/UI 全链路支持（识别、click/click_target 展开、候选 API、集合 match、test_action、drag；region=固定区域兜底 1.0；获胜成员 op_region 链生效）。
 - 验证：workspace **980/0**、UI **2407/190/0 dead/158 runner/6 nav**；Lead 冒烟（用户数据副本 frame6，无真实点击）：混合集合 candidates count=5（含 member/member_kind）、collection/match winner OCR、test_action dry index 0/1 正常。
 - 遗留：click_target 成员不继承集合级 locator 覆盖；无期望文字普通 OCR 成员 load 期报错；混合真实点击（OCR/region）未真机验证；region 恒 1.0 压过其它分数。
+## seq133 追加验收（2026-11-07 12:06）：点测/拖测卡死修复 + 文字素材多候选
+
+- 反馈：#3「素材『预设队伍更换_通用战斗准备』点击测试（真实模式）…」卡住，点测/拖测都用不了；#2 模板多候选而文字素材没有多识别；#1 常驻弹窗识别线程设想（低优先，记档不实现）。
+- #3 根因/修复：Adb::run 无超时 → 服务线程永久阻塞。9323ace 给所有 adb 调用加超时（15s/screencap 20s，超时杀进程树）、OCR 锁毒化兜底；UI 45s AbortController 超时恢复/in-flight/错误提示。冒烟假挂起 adb：test_action real 400/15.1s，服务恢复。
+- #2 修复：OCR 候选=区域全部识别行（text/score/pass，pass 优先→score desc→y→x；期望行 index0），runtime preview 与候选 API 同序一致；运行期 click/wait 仍 fuzzy。冒烟 预设队伍更换_通用战斗准备 count=51/pass 置顶、预设分组识别_式神录 count=8 且 test_action index 0/1 一致。
+- 验证：workspace **984/0**、UI **2428/190/0 dead/158 runner/6 nav**、cargo check --features ocr exit 0。
+- 遗留：集合内 OCR 成员候选仍只列 pass 行；global 模式 ocr_var 期望回退 runtime_text；其余非热路径无界等待未改。

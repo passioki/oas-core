@@ -4753,3 +4753,15 @@ egion.asset mode=asset；op_region 链优先不变；serve preview 原本同源�
 > **阈值口径**：模板成员沿用集合级 threshold（模板-only 兼容）；混合集合每行 pass 用成员自身阈值（模板 NCC / OCR 最低置信度 0=unset / region 1.0）；	hreshold 字段回显集合级值。
 > **验证**：workspace **980/0**（oas-task 161 / oas-runtime 231 / oasd 460）、UI **2407 checks / 190 ids / 0 dead / 158 runner / 6 nav**、cargo check --features ocr exit 0。Lead 独立冒烟（用户数据副本 _verify\seq132-collection-mixed，frame 6，无真实点击）：混合集合 candidates **count=5**（test template×3 + 管理分组/预设 OCR×2，带 member/member_kind）、collection/match winner OCR score .986/action_box [1087,83,157,544]、test_action dry candidate_index 0→test [979,150,27,31]、1→OCR 成员 [1087,83,157,544]（op_region 链生效）。
 > **遗留/风险**：click_target 成员不继承集合级 locator 覆盖（threshold/require_template/region 等）；普通 OCR 成员无期望文字 load 期报错；混合集合真实点击（OCR/region）用 action-box 中心且未真机验证；旧 sset_match_candidates 对 collection 仍模板-only（混合走新 API）；集合内 region 恒 1.0 会压过其它分数（有意兜底语义，后续可加优先级）。未 tag/未 release。
+# ☆ §E-101 ☆☆☆ [11-07 12:06] 用户设想（低优先，先记档不实现）：常驻弹窗识别线程 + 与主任务并行
+
+> 用户原话要点：「识别异常情况的任务能否常驻且和别的任务并行？作为两个线程。初步设想是，每时每刻全屏进行多行文字识别，与提前设定好的多项键值进行对比，哪个键值命中，就代表是否有弹窗，有弹窗就切换进程到关闭弹窗任务，完成后再切回主进程。可以用这个来高效率关闭弹窗，确保任务顺利进行。这个优先级不高，先放着。」
+> Lead 评估（待用户后续排期）：可作为 Runner/运行时「旁路监视线程」：独立线程按周期抓帧→全屏 det+rec→与用户配置的键值（ocr 期望文字集合）比对→命中则暂停主任务、调用/内联关闭弹窗任务、完成后恢复；需解决设备输入互斥（同一 ADB 串行）、主任务暂停/恢复点、抓帧开销、键值配置 UI 与生效范围。**本轮不实现，仅记录。**
+# ★ §E-102 ★★★ [11-07 12:06→12:15] seq133：#3 真实点测/拖测卡死（adb 无超时）+ #2 OCR 文字素材多候选
+
+> 用户 12:06 反馈 3 条：① 设想常驻弹窗识别线程与主任务并行（低优先，见 §E-101 记档不实现）；② 模板图识别是多候选，文字素材没有多识别；③ 「素材『预设队伍更换_通用战斗准备』点击测试（真实模式）…」卡住，这次点测/拖测都用不了（允许关闭编辑端后台）。
+> **#3 根因**（Lead 从 Studio 日志定位）：POST /task/asset/test_action 12:04:46 起永不返回、其它 GET 正常 → crates/oas-adapter-pc 的 Adb::run 用 Command::output() **无超时**，ADB/模拟器偶发卡住即永久阻塞服务线程（点测/拖测/live/真实点击全部受影响）。修复 9323ace：
+un_with_timeout（spawn + stdout/stderr 双线程排空 + try_wait deadline 轮询；超时 taskkill /T 杀进程树；默认 15s、screencap 20s；错误含 argv）；serve OCR 引擎锁毒化兜底 lock_recover（10 处）；UI ASSET_TEST_TIMEOUT_MS=45000 + AbortController/fetchJsonWithTimeout/postJsonTimed，点测/长按/拖测及 /input/swipe 全部超时恢复（finally + in-flight 防重 + 明确错误文案）。冒烟（假挂起 adb，无真实点击）：test_action real → **400 / 15114ms**「capture failed: adb devices timed out after 15s (killed)」，随后 /state 200 服务正常。
+> **#2 修复**：OCR 素材候选改为识别区域内**全部 det+rec 行**（仅按素材 OCR 最低置信度过滤），每行 	ext/score/pass（pass=无期望文字或 strict 匹配期望），排序 **pass 优先→score desc→y→x**（期望行存在则 index0=期望行）；runtime preview_root_candidate OCR 分支与候选 API 共用 ocr_candidate_line_pass/ocr_candidate_lines_pass_first，candidate_index 同序一致；编辑器 strict、运行期 click/wait 保持 fuzzy 原规则。冒烟：预设队伍更换_通用战斗准备 frame6 **count=51**（index0=队伍1 pass=true，其余非期望行列出）；预设分组识别_式神录 count=8 且 test_action candidate_index 0/1 与候选完全一致。
+> **验证**：workspace **984/0**（adapter 8/0 含 Windows 假 exe 挂起超时单测、runtime 232/0、oasd 460/0）、UI **2428 checks / 190 ids / 0 dead / 158 runner / 6 nav**、cargo check --features ocr exit 0。未 tag/未 release。
+> **遗留/风险**：集合内 OCR 成员候选仍只列 pass 行（保 collection match 语义，有意取舍）；运行期 OCR click/wait 仍 fuzzy；候选 API 的 ocr_var 期望在 global 模式回退 runtime_text（task 模式用 meta 变量默认值）；残余无界等待（package_cmd git、schedule tasklist/taskkill 等非点测热路径）未改；超时上限固定常量（如需可调）。

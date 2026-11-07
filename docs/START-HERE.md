@@ -23,20 +23,20 @@
 ★ 唯一真相 = git + 磁盘证据；**不信"我记得"** ⇒ 必须贴 `文件:行号` / commit / 测试输出
 ```
 
-## 0.1 当前状态快照（2026-11-07 08:2x · **seq 132 · ✅ done：集合成员扩展到所有素材（template/OCR/ocr_var/region）**）
+## 0.1 当前状态快照（2026-11-07 08:2x · **seq 133 · ✅ done：点测/拖测卡死修复（adb 超时）+ 文字素材多候选**）
 
 | 项 | 状态 |
 |---|---|
-| 分支/HEAD | `dev`；代码 HEAD = **`7229c59`**（seq132；dev/main 已同步）；PR1~PR7 全部 ✅（哈希见 `PENDING-LEDGER §E-79`）；**未 tag / 未 release** |
+| 分支/HEAD | `dev`；代码 HEAD = **`9323ace`**（seq133；dev/main 已同步）；PR1~PR7 全部 ✅（哈希见 `PENDING-LEDGER §E-79`）；**未 tag / 未 release** |
 | 引擎 | `oasd`（studio/runner/run/queue/stats/scheduler）+ 编辑器 UI + 素材库；`oasd --version` = **0.1.0**（dev；旧 v1.x 为历史内部 tag） |
-| 测试 | `cargo test --workspace` **980 passed / 0 failed**（23 suites；perceive **14** / flow **82** / runtime **226** / task **160** / adapter-pc 5 / oasd **458**）；UI pure test **2407 checks / Studio 190 ids / Runner 158 ids / 0 dead / 6 nav**；集合 API 冒烟 `_verify\seq131-collection-smoke\`（create/list/delete 200）；`cargo check -p oasd --features ocr` exit 0 |
+| 测试 | `cargo test --workspace` **984 passed / 0 failed**（23 suites；perceive **14** / flow **82** / runtime **226** / task **160** / adapter-pc 5 / oasd **458**）；UI pure test **2428 checks / Studio 190 ids / Runner 158 ids / 0 dead / 6 nav**；集合 API 冒烟 `_verify\seq131-collection-smoke\`（create/list/delete 200）；`cargo check -p oasd --features ocr` exit 0 |
 | 分包 | **Studio** `dist/oasd-v0.1.0-win64.zip` = **76,670,889 B**，SHA256 `F21843810EF94859DCA57CF172944FDB618DD19B058F11770DF8D236C3471B2F` · **oas-core Runner** `37,860,300 B`，SHA256 `163679D6099AA35ED67A54AD0AAA11AACFCF9275B657C00AEA9C5E2708CC9065` · **oas-runner 独立包** `37,870,658 B`，SHA256 `F6A6C3012AB20BF6CBB4564EC5E9735DF728C0C35DA8950751727415B392D46C`（均不入 git；**本批未重打，且旧 package_schema 包会被新引擎拒绝**） |
 | 独立仓 | **`oas-runner`** = `https://github.com/passioki/oas-runner`（`768a8b7`；pin `ba6813e`，**未随 seq126~130 更新、未打独立包**） |
 | 最终审计 | **`docs/AUDIT-2026-11-05.md`**（代码审计/文档漂移对照/残余风险/交接/关机） |
 | 双入口 | **Studio `http://127.0.0.1:8788/`**（`oasd studio`，编辑/构建/发布，**无调度页/无重置记忆**）· **Runner `http://127.0.0.1:8789/`**（`oasd runner`，nav 6 项：概览/已安装任务/安装包/队列与调度/运行记录/设置；**完整调度 UI + 重置记忆**；启动即内嵌调度，`--no-scheduler` 关闭）；`oasd serve` = Studio 的 deprecated 别名 |
 | 当前状态 | **所有服务已停止**（本轮验证/E2E/冒烟后确认无监听、无 `oasd` 进程）。启动命令见 §1.3/§6；**开发启动器 = `scripts\dev-serve.bat`（默认 Studio 8788；`-Surface runner` → Runner 8789）**；仓库根 `start-runner.bat` 为 Runner 快捷启动 |
 | 发布 | GitHub Release `v0.1.0` 仍是**历史节点**（tag `v0.1.0` → `e8edbef`，**未移动**）；**本批未 tag / 未 release** |
-| 当前任务 | **seq131 已完成并推送**：恢复「加入素材集合」入口——素材行「设置→加入集合」（template 专用）+ `#collection-add-dialog`（选择已有集合/新建集合；跨集合自动移出旧集合；保留 threshold/action_shape；保存后刷新两侧素材库并提示 tasks_rewritten）；任务库/全局库/帧详情三处接线。见 `PENDING §E-99`。工作区 `tasks/` 用户测试配置（不入库；用户可能随时编辑/删除，**不要提交/恢复**） |
+| 当前任务 | **seq133 已完成并推送**：① #3 真实点测/拖测卡死根因=adb 调用无超时 → oas-adapter-pc `run_with_timeout`（15s/screencap 20s、超时杀进程树、错误含 argv）+ serve OCR 锁恢复 + UI 45s AbortController/finally/in-flight；② #2 OCR 文字素材候选=区域全部行（text/score/pass，pass 优先、期望行 index0），runtime preview 与候选 API 同序；③ #1 常驻弹窗识别线程记档不实现（§E-101）。见 `PENDING §E-102`。工作区用户测试配置不入库（用户可能随时编辑/删除，**不要提交/恢复**） |
 | 数据 | 已提交基线：全局素材 **16 条 / 1 图**（15 `ocr_line` + 1 `template`）；帧 **28 个 / `current_id=20` / `next_id=41`**。工作区未提交用户数据：`assets/assets.json`、`frames/frames.json`、`scheduler.json`(+`.bak`)、未跟踪 `frames/frame-43.png`/`frame-44.png`、`tasks/切换预设御魂/`——**用户数据不入库，勿提交** |
 | 引擎特性 | flow DSL、素材/掩膜/多边形、点击定位链、HB1/HB7、整帧搜索、单识别 ROI + 操作区域、库、queue、stats、checkpoint/resume、reconnect、多帧投票、OCR+模板互证、统一任务模板/task lint、任务创建/编辑器运行、调度 v3、交付包 `.oaspkg`、Studio/Runner 双入口、内嵌调度/设备租约、子任务参数配置 |
 | 已知限制 | 见 `RESUME.md §5` / `SESSION-HANDOFF.md §4`；核心：`installed.json` 损坏无自动隔离、租约 pass 级、install/activate 调度检查有 check-then-act 小窗口、panic 安全依赖 unwind、PR7 8 条 UI P2、`start-runner.bat` 固定 8789、跨平台仅设计预留 |

@@ -5,13 +5,13 @@
 
 ```yaml
 task_id: oas-core-dual-app-upgrade
-checkpoint_seq: 132
-updated_at: 2026-11-07T08:4x+08:00
-trigger: 用户 08:26「目前只有模板图能加入集合，请扩展到所有素材」→ 集合成员允许 template/ocr_line/ocr_lines/ocr_var/region；oas-task 校验/expand、runtime locate/click 几何/获胜成员 op_region 链/混合候选 API、serve 候选/collection match/test_action、UI 菜单/对话框全链路支持。提交 `7229c59`；workspace 980/0、UI 2407/190/0/6；冒烟混合集合 candidates=5/match winner OCR/test_action index0/1
+checkpoint_seq: 133
+updated_at: 2026-11-07T12:2x+08:00
+trigger: 用户 12:06 三条：① 常驻弹窗识别并行设想（低优先，记档 §E-101 不实现）；② 文字素材缺多识别；③ 素材「预设队伍更换_通用战斗准备」真实点测卡住、点测/拖测不可用。Lead 从 Studio 日志定位 `POST /task/asset/test_action` 永不返回（Adb::run 无超时阻塞线程）→ oas-adapter-pc 全部 adb 调用加超时 + serve OCR 锁恢复 + UI 45s AbortController；OCR 候选改为区域全部行（pass 优先）并与 preview 同序。提交 `9323ace`；workspace 984/0、UI 2428/190/0/6
 status: done
-code_head: `7229c59`（dev=main=origin；未 tag/未 release）
-docs_head: seq132 docs 提交见 `git log -1`
-next_action: seq132 已完成并推送（未 tag/未 release）。后续：① **Firefox 手测**（素材设置→加入集合对 template/OCR/ocr_var/region 可用；集合行识别显示混合候选；集合用于 click/click_target/appear 时按成员类型识别；region 成员恒命中作为兜底；跨集合自动移出旧集合）；② 混合集合真实点击（OCR/region）需真机验证；click_target 成员不继承集合级 locator 覆盖（后续可加）；无期望文字普通 OCR 成员 load 期报错；③ V2.1（变量表达式/条件/循环/T9）、V2.2（Profile/多模拟器）；④ oas-runner 独立仓脚本+pin bump；⑤ 真机 E2E、T5 手写 polygon 校验、更新检测鉴权/GC、tag/Release 策略。详见 `PENDING §E-100`、`ENGINE §22.71`、`ACCEPTANCE` seq132 追加。
+code_head: `9323ace`（dev=main=origin；未 tag/未 release）
+docs_head: seq133 docs 提交见 `git log -1`
+next_action: seq133 已完成并推送（未 tag/未 release）。后续：① **Firefox 手测**（真实点测/长按/拖测：设备异常时 ≤45s 中止并恢复，不再永久“…”；OCR 素材识别显示区域内全部行，期望行置顶标绿，非期望文字可选测；拖测候选同样显示文字/分数/pass）；② 若仍见「op_region chain node … has no match」那是识别失败（检查帧/ROI/期望文字/链节点），不是卡死；③ 常驻弹窗识别线程设想（§E-101）待排期；④ 集合内 OCR 成员候选仍只列 pass 行、global 模式 ocr_var 期望回退 runtime_text 等遗留；⑤ V2.1/V2.2、oas-runner 独立仓脚本+pin bump、真机 E2E、tag/Release 策略。详见 `PENDING §E-102/§E-101`、`ENGINE §22.72`、`ACCEPTANCE` seq133 追加。
 ```
 
 ## 0. 目标（本阶段）
@@ -314,6 +314,15 @@ next_action: seq132 已完成并推送（未 tag/未 release）。后续：① *
 > 阈值：模板成员沿用集合级 threshold；混合集合每行 pass 用成员自身阈值（模板 NCC / OCR 最低置信度 0=unset / region 1.0），`threshold` 字段仍回显集合级值。
 > 验证：workspace **980/0**（oas-task 161 / oas-runtime 231 / oasd 460）、UI **2407 checks / 190 ids / 0 dead / 158 runner / 6 nav**、cargo check --features ocr exit 0；Lead 冒烟（用户数据副本 frame6，无真实点击）：混合集合 candidates **count=5**（test×3+OCR×2，含 member/member_kind）、collection/match winner OCR、test_action dry index0→test / index1→OCR 成员（op_region 链生效）。
 > 遗留：click_target 成员不继承集合级 locator 覆盖；无期望文字普通 OCR 成员 load 期报错；混合集合真实点击（OCR/region）未真机验证；region 恒 1.0 会压过其它分数（有意兜底，可后续加优先级）。
+
+
+## 1.27 2026-11-07 12:06→12:2x（seq 133）点测/拖测卡死修复 + 文字素材多候选（✅ 已完成并推送）
+
+> 用户 12:06 三条：① 常驻弹窗识别线程与主任务并行设想（**低优先，记档 §E-101 不实现**）；② 模板图识别多候选、文字素材没有多识别；③ 素材「预设队伍更换_通用战斗准备」点击测试（真实模式）卡住，点测/拖测都用不了（允许关闭编辑端后台）。
+> **#3 根因**（Studio 日志）：`POST /task/asset/test_action` 12:04:46 起永不返回、其它 GET 正常 → `crates/oas-adapter-pc` `Adb::run` 用 `Command::output()` 无超时，ADB 偶发卡住即永久阻塞服务线程。修复 `9323ace`：`run_with_timeout`（spawn + stdout/stderr 双线程排空 + try_wait deadline；超时 taskkill /T 杀进程树；默认 15s、screencap 20s；错误含 argv）；serve OCR 引擎锁毒化 `lock_recover`（10 处）；UI `ASSET_TEST_TIMEOUT_MS=45000` + AbortController/fetchJsonWithTimeout/postJsonTimed + finally + in-flight，点测/长按/拖测及 `/input/swipe` 超时后恢复并提示。冒烟（假挂起 adb，无真实点击）：test_action real 400 / 15114ms，服务恢复。
+> **#2**：OCR 候选=识别区域内全部 det+rec 行（仅按素材 OCR 最低置信度过滤），每行 `text/score/pass`（pass=无期望或 strict 匹配期望），排序 pass 优先→score desc→y→x（期望行存在则 index0=期望行）；runtime `preview_root_candidate` 与候选 API 共用 `ocr_candidate_line_pass`/`ocr_candidate_lines_pass_first`，candidate_index 同序；编辑器 strict、运行期 click/wait 保持 fuzzy。冒烟：`预设队伍更换_通用战斗准备` frame6 count=51（index0=队伍1 pass=true），`预设分组识别_式神录` count=8 且 test_action index 0/1 与候选一致。
+> 验证：workspace **984/0**（adapter 8/0 含 Windows 假 exe 挂起超时单测、runtime 232/0、oasd 460/0）、UI **2428 checks / 190 ids / 0 dead / 158 runner / 6 nav**、cargo check --features ocr exit 0。
+> 遗留：集合内 OCR 成员候选仍只列 pass 行（保 collection match 语义）；global 模式 ocr_var 期望回退 runtime_text；残余非热路径无界等待（package_cmd git、schedule tasklist/taskkill）未改；常驻弹窗识别线程待排期（§E-101）。
 
 ## 2. 本批交付（seq 110）
 
